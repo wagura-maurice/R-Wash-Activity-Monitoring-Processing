@@ -14,6 +14,8 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # Database connection parameters from environment (must be set in .env file)
 SERVER = os.getenv('DB_SERVER')
 DATABASE = os.getenv('DB_DATABASE')
@@ -141,7 +143,7 @@ def main():
     json_file = args.file
     if json_file is None:
         # Find latest mapped data file
-        pattern = os.path.join(r"d:\MethLab\ActivityMonitoring\data\mapped", "mapped_data_*.json")
+        pattern = os.path.join(BASE_DIR, "data", "mapped", "mapped_data_*.json")
         files = glob.glob(pattern)
         if not files:
             print("ERROR: No mapped_data_*.json files found in data/mapped/")

@@ -8,7 +8,7 @@ import os
 from datetime import datetime
 from collections import Counter
 
-BASE_DIR = r'D:\MethLab\ActivityMonitoring'
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RAW_DIR = os.path.join(BASE_DIR, 'data', 'raw')
 CONSOLIDATED_DIR = os.path.join(BASE_DIR, 'data', 'consolidated')
 INSTANCES_DIR = os.path.join(BASE_DIR, 'data', 'instances')

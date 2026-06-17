@@ -14,6 +14,8 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
 
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 # Database connection parameters from environment (must be set in .env file)
 SERVER = os.getenv('DB_SERVER')
 DATABASE = os.getenv('DB_DATABASE')
@@ -171,7 +173,7 @@ def load_consolidated_data(file_path=None):
         return pd.read_excel(file_path)
     
     # Find most recent consolidated file
-    pattern = os.path.join(r"d:\MethLab\ActivityMonitoring\data\consolidated", "consolidated_data_*.xlsx")
+    pattern = os.path.join(BASE_DIR, "data", "consolidated", "consolidated_data_*.xlsx")
     files = glob.glob(pattern)
     
     if not files:
@@ -669,7 +671,7 @@ def main():
     print("SAVING OUTPUT")
     print("="*70)
 
-    base_dir = r"d:\MethLab\ActivityMonitoring\data\mapped"
+    base_dir = os.path.join(BASE_DIR, "data", "mapped")
     os.makedirs(base_dir, exist_ok=True)
 
     # Save with timestamp in filename (no 'all', no 'v2', no country suffix)
