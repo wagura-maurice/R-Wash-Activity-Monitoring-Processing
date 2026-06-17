@@ -79,7 +79,7 @@ The pipeline processes data through 5 sequential stages, managed by numbered Pyt
 ## Project Structure
 
 ```
-ActivityMonitoring/
+R-Wash-Activity-Monitoring-Processing/
 ├── data/
 │   ├── raw/                    # ODK Excel exports
 │   ├── consolidated/           # Stage 1 output
@@ -110,7 +110,7 @@ ActivityMonitoring/
 ```bash
 # Clone repository
 git clone <repository-url>
-cd ActivityMonitoring
+cd R-Wash-Activity-Monitoring-Processing
 
 # Install dependencies
 pip install -r requirements.txt
