@@ -1,0 +1,12 @@
+# R-WASH Activity Monitoring Data Pipeline
+# Python dependencies for processing ODK Central exports
+
+# Data processing
+pandas>=2.0.0
+openpyxl>=3.1.0
+
+# Database connectivity
+pyodbc>=4.0.35
+
+# Environment management
+python-dotenv>=1.0.0
