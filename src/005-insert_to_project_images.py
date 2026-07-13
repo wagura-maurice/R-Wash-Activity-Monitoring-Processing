@@ -39,6 +39,33 @@ def load_json_data(filename):
     with open(filename, 'r', encoding='utf-8') as f:
         return json.load(f)
 
+def _get_instance_id(record):
+    """Return the activity/instance identifier for a record."""
+    for key in ('Id', 'activity_id', '_instance_id'):
+        val = record.get(key)
+        if val is not None:
+            return val
+    return None
+
+def assign_showdata(data):
+    """
+    Assign ShowData flag within each instance group.
+
+    Records are grouped by their activity/instance identifier. The first
+    record in each group keeps its existing ShowData value (or None if
+    absent), and each subsequent (repeating) record is assigned 1.
+    """
+    instance_seen = {}
+    for record in data:
+        instance_id = _get_instance_id(record)
+        if instance_id is None:
+            continue
+        idx = instance_seen.get(instance_id, 0)
+        if idx > 0:
+            record['ShowData'] = 1
+        instance_seen[instance_id] = idx + 1
+    return data
+
 def upsert_record(cursor, record):
     """
     Insert or update a record in ProjectImages table.
@@ -48,6 +75,8 @@ def upsert_record(cursor, record):
     """
     image_path = record.get('ImagePath')
     site_id = record.get('SiteId')
+    instance_id = _get_instance_id(record)
+    showdata = record.get('ShowData')
     
     if image_path is None or site_id is None:
         return ('error', 0)
@@ -71,6 +100,8 @@ def upsert_record(cursor, record):
         # UPDATE existing record
         sql = """
         UPDATE ProjectImages SET
+            ActivityId = ?,
+            ShowData = ?,
             ImageDescription = ?,
             Imagedate = ?,
             Longitude = ?,
@@ -84,6 +115,8 @@ def upsert_record(cursor, record):
         WHERE ImagePath = ? AND SiteId = ?
         """
         values = [
+            instance_id,
+            showdata,
             record.get('ImageDescription'),
             image_date,
             record.get('Longitude'),
@@ -103,14 +136,16 @@ def upsert_record(cursor, record):
         # INSERT new record
         sql = """
         INSERT INTO ProjectImages (
-            SiteId, ImageDescription, ImagePath, Imagedate,
+            SiteId, ActivityId, ShowData, ImageDescription, ImagePath, Imagedate,
             Longitude, latitude, ActivityStatus, Comments,
             ProjectDescription, CompletionPercentage, CountryId,
             SiteName
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """
         values = [
             site_id,
+            instance_id,
+            showdata,
             record.get('ImageDescription'),
             image_path,
             image_date,
@@ -164,6 +199,12 @@ def main():
     cursor.execute("SELECT COUNT(*) FROM ProjectImages")
     current_count = cursor.fetchone()[0]
     print(f"\n[3] Current ProjectImages row count: {current_count}")
+    
+    # Assign ShowData flag within each instance group
+    print("\n[3a] Assigning ShowData flag to repeating instance records...")
+    data = assign_showdata(data)
+    flagged_count = sum(1 for r in data if r.get('ShowData') == 1)
+    print(f"   Flagged {flagged_count} repeating records with ShowData=1")
     
     # Upsert records
     print("\n[4] Upserting records...")
