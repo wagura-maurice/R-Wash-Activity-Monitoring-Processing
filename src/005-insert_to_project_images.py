@@ -52,8 +52,9 @@ def assign_showdata(data):
     Assign ShowData flag within each instance group.
 
     Records are grouped by their activity/instance identifier. The first
-    record in each group keeps its existing ShowData value (or None if
-    absent), and each subsequent (repeating) record is assigned 1.
+    record in each group is assigned ShowData = 1 (visible in Power BI).
+    All subsequent records for the same instance are assigned ShowData = 0
+    (hidden in Power BI).
     """
     instance_seen = {}
     for record in data:
@@ -61,8 +62,7 @@ def assign_showdata(data):
         if instance_id is None:
             continue
         idx = instance_seen.get(instance_id, 0)
-        if idx > 0:
-            record['ShowData'] = 1
+        record['ShowData'] = 1 if idx == 0 else 0
         instance_seen[instance_id] = idx + 1
     return data
 
@@ -201,10 +201,12 @@ def main():
     print(f"\n[3] Current ProjectImages row count: {current_count}")
     
     # Assign ShowData flag within each instance group
-    print("\n[3a] Assigning ShowData flag to repeating instance records...")
+    print("\n[3a] Assigning ShowData flags within instance groups...")
     data = assign_showdata(data)
-    flagged_count = sum(1 for r in data if r.get('ShowData') == 1)
-    print(f"   Flagged {flagged_count} repeating records with ShowData=1")
+    visible_count = sum(1 for r in data if r.get('ShowData') == 1)
+    hidden_count = sum(1 for r in data if r.get('ShowData') == 0)
+    print(f"   ShowData=1 (visible, first per instance): {visible_count}")
+    print(f"   ShowData=0 (hidden, repeating rows):      {hidden_count}")
     
     # Upsert records
     print("\n[4] Upserting records...")
