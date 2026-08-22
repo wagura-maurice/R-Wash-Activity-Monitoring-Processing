@@ -25,6 +25,7 @@ ENV/
 /data/consolidated/
 /data/instances/
 /data/mapped/
+/data/images/
 
 # OS
 .DS_Store

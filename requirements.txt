@@ -10,3 +10,8 @@ pyodbc>=4.0.35
 
 # Environment management
 python-dotenv>=1.0.0
+
+# ODK Central and image processing
+requests>=2.31.0
+Pillow>=10.0.0
+SQLAlchemy>=2.0.0
