@@ -24,7 +24,9 @@ Usage:
 """
 
 import os
+import socket
 import sys
+import time
 from ftplib import FTP_TLS, error_perm
 from io import BytesIO
 from pathlib import Path
@@ -249,7 +251,7 @@ def upload_images_to_ftp(
     print(f"[FTP] Connecting to {host}:{port} as {user} (explicit FTPS)…", flush=True)
 
     ftp = FTP_TLS()
-    ftp.connect(host, port, timeout=60)
+    ftp.connect(host, port, timeout=300)
     ftp.login(user, password)
     ftp.prot_p()  # upgrade to protected (encrypted) data connection
 
@@ -260,12 +262,31 @@ def upload_images_to_ftp(
         ftp.cwd(remote_dir)
 
     # Build a set of filenames already on the remote server so we can skip them.
+    # nlst() can time out on servers with many files; fall back to per-file
+    # SIZE checks if the full listing fails.
+    remote_files = None
     try:
+        ftp.sock.settimeout(300)
         remote_files = set(ftp.nlst())
-    except error_perm:
+    except (error_perm, socket.timeout, TimeoutError, OSError):
+        remote_files = None
+
+    if remote_files is not None:
+        if verbose:
+            print(f"[FTP] Remote directory has {len(remote_files)} existing files.", flush=True)
+    else:
+        if verbose:
+            print("[FTP] Could not list remote directory; will check each file individually.", flush=True)
         remote_files = set()
-    if verbose:
-        print(f"[FTP] Remote directory has {len(remote_files)} existing files.", flush=True)
+
+    def _remote_file_exists(fname):
+        if remote_files is not None:
+            return fname in remote_files
+        try:
+            ftp.size(fname)
+            return True
+        except error_perm:
+            return False
 
     uploaded = 0
     skipped = 0
@@ -274,23 +295,53 @@ def upload_images_to_ftp(
 
     for local_path in local_files:
         filename = local_path.name
-        if filename in remote_files:
+        if _remote_file_exists(filename):
             skipped += 1
             if verbose:
                 print(f"[FTP] SKIP  {filename} (already exists on server)", flush=True)
             continue
 
-        try:
-            with open(local_path, "rb") as f:
-                ftp.storbinary(f"STOR {filename}", f)
-            remote_files.add(filename)
-            uploaded += 1
-            if verbose:
-                print(f"[FTP] UPLOADED  {filename} ({local_path.stat().st_size} bytes)", flush=True)
-        except Exception as exc:
+        success = False
+        for attempt in range(3):
+            try:
+                with open(local_path, "rb") as f:
+                    ftp.storbinary(f"STOR {filename}", f)
+                remote_files.add(filename)
+                uploaded += 1
+                if verbose:
+                    print(f"[FTP] UPLOADED  {filename} ({local_path.stat().st_size} bytes)", flush=True)
+                success = True
+                break
+            except (socket.timeout, TimeoutError) as exc:
+                if attempt < 2:
+                    print(f"[FTP] Timeout on {filename}, retrying ({attempt + 1}/3)…", flush=True)
+                    time.sleep(2)
+                    try:
+                        ftp.quit()
+                    except Exception:
+                        ftp.close()
+                    ftp = FTP_TLS()
+                    ftp.connect(host, port, timeout=300)
+                    ftp.login(user, password)
+                    ftp.prot_p()
+                    if remote_dir and remote_dir != "/":
+                        ftp.cwd(remote_dir)
+                    continue
+                failed += 1
+                failed_list.append({"filename": filename, "error": str(exc)})
+                print(f"[FTP] FAILED  {filename}: {exc}", flush=True)
+                success = True  # mark as handled
+                break
+            except Exception as exc:
+                failed += 1
+                failed_list.append({"filename": filename, "error": str(exc)})
+                print(f"[FTP] FAILED  {filename}: {exc}", flush=True)
+                success = True  # mark as handled
+                break
+        if not success:
+            # Should not reach here, but just in case
             failed += 1
-            failed_list.append({"filename": filename, "error": str(exc)})
-            print(f"[FTP] FAILED  {filename}: {exc}", flush=True)
+            failed_list.append({"filename": filename, "error": "exhausted retries"})
 
     try:
         ftp.quit()
