@@ -248,25 +248,43 @@ def upload_images_to_ftp(
         print(f"[FTP] No image files found in {local_dir}", flush=True)
         return {"uploaded": 0, "skipped": 0, "failed": 0}
 
+    def _connect_ftp():
+        """Create a fresh FTPS connection with generous timeouts."""
+        f = FTP_TLS()
+        f.connect(host, port, timeout=300)
+        # Set a long timeout for the SSL handshake during auth().
+        f.sock.settimeout(300)
+        f.login(user, password)
+        f.prot_p()  # upgrade to protected (encrypted) data connection
+        if remote_dir and remote_dir != "/":
+            f.cwd(remote_dir)
+        return f
+
     print(f"[FTP] Connecting to {host}:{port} as {user} (explicit FTPS)…", flush=True)
 
-    ftp = FTP_TLS()
-    ftp.connect(host, port, timeout=300)
-    ftp.login(user, password)
-    ftp.prot_p()  # upgrade to protected (encrypted) data connection
+    ftp = None
+    for attempt in range(3):
+        try:
+            ftp = _connect_ftp()
+            break
+        except (socket.timeout, TimeoutError, OSError) as exc:
+            if attempt < 2:
+                print(f"[FTP] Connection attempt {attempt + 1} failed ({exc}), retrying…", flush=True)
+                time.sleep(3)
+            else:
+                print(f"[FTP] Could not connect after 3 attempts: {exc}", flush=True)
+                return {"uploaded": 0, "skipped": 0, "failed": len(local_files)}
 
     if verbose:
         print(f"[FTP] Connected. Server reply: {ftp.welcome}", flush=True)
-
-    if remote_dir and remote_dir != "/":
-        ftp.cwd(remote_dir)
 
     # Build a set of filenames already on the remote server so we can skip them.
     # nlst() can time out on servers with many files; fall back to per-file
     # SIZE checks if the full listing fails.
     remote_files = None
     try:
-        ftp.sock.settimeout(300)
+        if ftp.sock:
+            ftp.sock.settimeout(300)
         remote_files = set(ftp.nlst())
     except (error_perm, socket.timeout, TimeoutError, OSError):
         remote_files = None
@@ -320,12 +338,7 @@ def upload_images_to_ftp(
                         ftp.quit()
                     except Exception:
                         ftp.close()
-                    ftp = FTP_TLS()
-                    ftp.connect(host, port, timeout=300)
-                    ftp.login(user, password)
-                    ftp.prot_p()
-                    if remote_dir and remote_dir != "/":
-                        ftp.cwd(remote_dir)
+                    ftp = _connect_ftp()
                     continue
                 failed += 1
                 failed_list.append({"filename": filename, "error": str(exc)})
