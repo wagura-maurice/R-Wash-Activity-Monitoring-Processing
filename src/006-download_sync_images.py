@@ -1,33 +1,26 @@
 #!/usr/bin/env python3
-"""Synchronized ODK image download + FTPS upload.
+"""Download images from ODK Central into data/images/.
 
-Downloads images from ODK Central and immediately uploads any new files to
-rwash.net via explicit FTPS, without overwriting existing local or remote files.
+Acquires image attachments for all configured projects and saves them locally
+with EXIF orientation correction applied during the save.  Existing files are
+never overwritten (reused as-is).
 
-Uses helpers in odk_sql_helpers.py for ODK Central access.
+Uploading to rwash.net is handled separately by 008-upload_sync_images.py,
+which should run after 007-convert_nonstandard_images.py normalizes extensions.
 
 Usage:
-    # sync (download + upload) all projects
+    # download images for all projects
     python src/006-download_sync_images.py
 
-    # sync specific projects only
+    # download images for specific projects only
     python src/006-download_sync_images.py SomaliaGarowe EthiopiaV3
-
-    # download only
-    python src/006-download_sync_images.py --download-only
-
-    # upload existing local images only
-    python src/006-download_sync_images.py --upload-only
 
     # list available project names
     python src/006-download_sync_images.py --list
 """
 
 import os
-import socket
 import sys
-import time
-from ftplib import FTP_TLS, error_perm
 from io import BytesIO
 from pathlib import Path
 
@@ -138,13 +131,6 @@ CENTRAL_PASSWORD = os.getenv("ODK_CENTRAL_PASSWORD", "RWASHVision@!2026")
 
 IMAGES_ROOT = os.path.join(BASE_DIR, "data", "images")
 
-# FTPS credentials for rwash.net image hosting
-FTP_HOST = os.getenv("FTP_HOST", "ftp.rwash.net")
-FTP_PORT = int(os.getenv("FTP_PORT", "21"))
-FTP_USER = os.getenv("FTP_USER", "root@rwash.net")
-FTP_PASSWORD = os.getenv("FTP_PASSWORD", "7;B4-Y!7AK74aPj8")
-FTP_REMOTE_DIR = os.getenv("FTP_REMOTE_DIR", "/")  # root directory on the remote server
-
 # Mirrors the export cells in PullODK.ipynb.
 # name -> (project_id, form_id)
 PROJECTS = {
@@ -219,255 +205,6 @@ def download_images_for_project(name, project_id, form_id, images_root=IMAGES_RO
     }
 
 
-def correct_image_orientations(images_root=IMAGES_ROOT, verbose=True):
-    """Scan all images in *images_root* and re-save them with correct orientation.
-
-    Uses EXIF orientation metadata (via ``ImageOps.exif_transpose``) to rotate
-    each image upright.  For images with no EXIF orientation tag that are in
-    landscape mode, a best-effort 90-degree rotation is applied to force
-    portrait orientation.
-
-    Files that are already correctly oriented or that cannot be opened as
-    images are left untouched.
-
-    Returns a dict with counts: corrected, skipped, failed.
-    """
-    local_dir = Path(images_root).resolve()
-    if not local_dir.is_dir():
-        print(f"[ORIENT] Images directory not found: {local_dir}", flush=True)
-        return {"corrected": 0, "skipped": 0, "failed": 0}
-
-    image_exts = {".jpg", ".jpeg", ".png", ".webp"}
-    local_files = sorted(
-        p for p in local_dir.iterdir()
-        if p.is_file() and p.suffix.lower() in image_exts and p.stat().st_size > 0
-    )
-    if not local_files:
-        print(f"[ORIENT] No image files found in {local_dir}", flush=True)
-        return {"corrected": 0, "skipped": 0, "failed": 0}
-
-    corrected = 0
-    skipped = 0
-    failed = 0
-
-    for idx, local_path in enumerate(local_files, 1):
-        try:
-            with Image.open(local_path) as image:
-                exif = image.getexif()
-                orientation = exif.get(0x0112) if exif else None
-
-                # Determine if correction is needed
-                needs_correction = False
-                if orientation is not None and orientation != 1:
-                    needs_correction = True
-                elif orientation is None and image.width > image.height:
-                    needs_correction = True
-
-                if not needs_correction:
-                    skipped += 1
-                    continue
-
-                # Apply orientation correction
-                corrected_image = _apply_image_orientation(image)
-
-                # Save back in the same format
-                suffix = local_path.suffix.lower()
-                save_kwargs = {}
-                if suffix in {".jpg", ".jpeg"}:
-                    if corrected_image.mode not in {"RGB", "L"}:
-                        corrected_image = corrected_image.convert("RGB")
-                    save_kwargs = {"format": "JPEG", "quality": 85, "optimize": True}
-                elif suffix == ".png":
-                    if corrected_image.mode not in {"1", "L", "P", "RGB", "RGBA", "LA"}:
-                        corrected_image = corrected_image.convert(
-                            "RGBA" if "A" in corrected_image.getbands() else "RGB"
-                        )
-                    save_kwargs = {"format": "PNG", "optimize": True, "compress_level": 9}
-                else:
-                    if corrected_image.mode not in {"RGB", "RGBA"}:
-                        corrected_image = corrected_image.convert(
-                            "RGBA" if "A" in corrected_image.getbands() else "RGB"
-                        )
-                    save_kwargs = {"format": "WEBP", "quality": 85, "method": 6}
-
-                temp_path = local_path.with_suffix(f"{local_path.suffix}.oriented")
-                corrected_image.save(temp_path, **save_kwargs)
-                temp_path.replace(local_path)
-                corrected += 1
-
-                if verbose and idx % 50 == 0:
-                    print(f"[ORIENT] Processed {idx}/{len(local_files)}…", flush=True)
-
-        except (OSError, ValueError, UnidentifiedImageError) as exc:
-            failed += 1
-            if verbose:
-                print(f"[ORIENT] FAILED  {local_path.name}: {exc}", flush=True)
-
-    print(
-        f"\n[ORIENT] Orientation pass complete: "
-        f"corrected={corrected}, skipped={skipped}, failed={failed}",
-        flush=True,
-    )
-    return {"corrected": corrected, "skipped": skipped, "failed": failed}
-
-
-def upload_images_to_ftp(
-    images_root=IMAGES_ROOT,
-    host=FTP_HOST,
-    port=FTP_PORT,
-    user=FTP_USER,
-    password=FTP_PASSWORD,
-    remote_dir=FTP_REMOTE_DIR,
-    verbose=True,
-):
-    """Upload images from *images_root* to the rwash.net FTP server via explicit FTPS.
-
-    Files that already exist on the remote server are never overwritten.
-    The function checks the remote directory listing before each upload and
-    skips any filename that is already present.
-
-    Returns a dict with counts: uploaded, skipped, failed.
-    """
-    local_dir = Path(images_root).resolve()
-    if not local_dir.is_dir():
-        print(f"[FTP] Images directory not found: {local_dir}", flush=True)
-        return {"uploaded": 0, "skipped": 0, "failed": 0}
-
-    local_files = sorted(
-        p for p in local_dir.iterdir() if p.is_file() and p.stat().st_size > 0
-    )
-    if not local_files:
-        print(f"[FTP] No image files found in {local_dir}", flush=True)
-        return {"uploaded": 0, "skipped": 0, "failed": 0}
-
-    def _connect_ftp():
-        """Create a fresh FTPS connection with generous timeouts."""
-        f = FTP_TLS()
-        f.connect(host, port, timeout=300)
-        # Set a long timeout for the SSL handshake during auth().
-        f.sock.settimeout(300)
-        f.login(user, password)
-        f.prot_p()  # upgrade to protected (encrypted) data connection
-        if remote_dir and remote_dir != "/":
-            f.cwd(remote_dir)
-        return f
-
-    print(f"[FTP] Connecting to {host}:{port} as {user} (explicit FTPS)…", flush=True)
-
-    ftp = None
-    for attempt in range(3):
-        try:
-            ftp = _connect_ftp()
-            break
-        except (socket.timeout, TimeoutError, OSError) as exc:
-            if attempt < 2:
-                print(f"[FTP] Connection attempt {attempt + 1} failed ({exc}), retrying…", flush=True)
-                time.sleep(3)
-            else:
-                print(f"[FTP] Could not connect after 3 attempts: {exc}", flush=True)
-                return {"uploaded": 0, "skipped": 0, "failed": len(local_files)}
-
-    if verbose:
-        print(f"[FTP] Connected. Server reply: {ftp.welcome}", flush=True)
-
-    # Build a set of filenames already on the remote server so we can skip them.
-    # nlst() can time out on servers with many files; fall back to per-file
-    # SIZE checks if the full listing fails.
-    remote_files = None
-    try:
-        if ftp.sock:
-            ftp.sock.settimeout(300)
-        remote_files = set(ftp.nlst())
-    except (error_perm, socket.timeout, TimeoutError, OSError):
-        remote_files = None
-
-    if remote_files is not None:
-        if verbose:
-            print(f"[FTP] Remote directory has {len(remote_files)} existing files.", flush=True)
-    else:
-        if verbose:
-            print("[FTP] Could not list remote directory; will check each file individually.", flush=True)
-        remote_files = set()
-
-    def _remote_file_exists(fname):
-        if remote_files is not None:
-            return fname in remote_files
-        try:
-            ftp.size(fname)
-            return True
-        except error_perm:
-            return False
-
-    uploaded = 0
-    skipped = 0
-    failed = 0
-    failed_list = []
-
-    for local_path in local_files:
-        filename = local_path.name
-        if _remote_file_exists(filename):
-            skipped += 1
-            if verbose:
-                print(f"[FTP] SKIP  {filename} (already exists on server)", flush=True)
-            continue
-
-        success = False
-        for attempt in range(3):
-            try:
-                with open(local_path, "rb") as f:
-                    ftp.storbinary(f"STOR {filename}", f)
-                remote_files.add(filename)
-                uploaded += 1
-                if verbose:
-                    print(f"[FTP] UPLOADED  {filename} ({local_path.stat().st_size} bytes)", flush=True)
-                success = True
-                break
-            except (socket.timeout, TimeoutError) as exc:
-                if attempt < 2:
-                    print(f"[FTP] Timeout on {filename}, retrying ({attempt + 1}/3)…", flush=True)
-                    time.sleep(2)
-                    try:
-                        ftp.quit()
-                    except Exception:
-                        ftp.close()
-                    ftp = _connect_ftp()
-                    continue
-                failed += 1
-                failed_list.append({"filename": filename, "error": str(exc)})
-                print(f"[FTP] FAILED  {filename}: {exc}", flush=True)
-                success = True  # mark as handled
-                break
-            except Exception as exc:
-                failed += 1
-                failed_list.append({"filename": filename, "error": str(exc)})
-                print(f"[FTP] FAILED  {filename}: {exc}", flush=True)
-                success = True  # mark as handled
-                break
-        if not success:
-            # Should not reach here, but just in case
-            failed += 1
-            failed_list.append({"filename": filename, "error": "exhausted retries"})
-
-    try:
-        ftp.quit()
-    except Exception:
-        try:
-            ftp.close()
-        except Exception:
-            pass
-
-    print(
-        f"\n[FTP] Upload complete: uploaded={uploaded}, skipped={skipped}, failed={failed}",
-        flush=True,
-    )
-    if failed_list:
-        print(f"[FTP] Failed files ({len(failed_list)}):", flush=True)
-        for item in failed_list:
-            print(f"  {item['filename']}: {item['error']}", flush=True)
-
-    return {"uploaded": uploaded, "skipped": skipped, "failed": failed}
-
-
 def main(argv):
     if "--list" in argv:
         print("Available projects:")
@@ -475,57 +212,41 @@ def main(argv):
             print(f"  {name:30s} project_id={pid:<3d} form_id={fid}")
         return 0
 
-    download_only = "--download-only" in argv
-    upload_only = "--upload-only" in argv
-
-    do_download = not upload_only
-    do_upload = not download_only
-
     selected = [a for a in argv if not a.startswith("-")]
-    if do_download and not selected:
+    if not selected:
         selected = list(PROJECTS.keys())
 
     unknown = [s for s in selected if s not in PROJECTS]
-    if do_download and unknown:
+    if unknown:
         print(f"Unknown project(s): {unknown}")
         print(f"Available: {', '.join(PROJECTS.keys())}")
         return 1
 
+    print(f"Downloading images for: {', '.join(selected)}")
+    print(f"Images root: {Path(IMAGES_ROOT).resolve()}")
+
     summary = {}
 
-    if do_download:
-        print(f"Downloading images for: {', '.join(selected)}")
-        print(f"Images root: {Path(IMAGES_ROOT).resolve()}")
+    for name in selected:
+        project_id, form_id = PROJECTS[name]
+        try:
+            summary[name] = download_images_for_project(name, project_id, form_id)
+        except Exception as exc:
+            print(f"[{name}] FAILED: {exc}", flush=True)
+            summary[name] = {"error": str(exc)}
 
-        for name in selected:
-            project_id, form_id = PROJECTS[name]
-            try:
-                summary[name] = download_images_for_project(name, project_id, form_id)
-            except Exception as exc:
-                print(f"[{name}] FAILED: {exc}", flush=True)
-                summary[name] = {"error": str(exc)}
+    print("\n=== Download Summary ===")
+    for name, stats in summary.items():
+        print(f"  {name:30s} {stats}")
 
-        print("\n=== Download Summary ===")
-        for name, stats in summary.items():
-            print(f"  {name:30s} {stats}")
-
-        if FAILED_ATTACHMENTS:
-            print(f"\n=== Failed attachments ({len(FAILED_ATTACHMENTS)}) ===")
-            for f in FAILED_ATTACHMENTS:
-                print(
-                    f"  project={f['project_id']} form={f['form_id']} "
-                    f"submission={f['instance_id']} file={f['filename']}"
-                )
-                print(f"    error: {f['error']}")
-
-    if do_upload:
-        print("\n=== Image Orientation Correction ===")
-        orient_summary = correct_image_orientations()
-        summary["orientation"] = orient_summary
-
-        print("\n=== FTPS Upload to rwash.net ===")
-        upload_summary = upload_images_to_ftp()
-        summary["ftp_upload"] = upload_summary
+    if FAILED_ATTACHMENTS:
+        print(f"\n=== Failed attachments ({len(FAILED_ATTACHMENTS)}) ===")
+        for f in FAILED_ATTACHMENTS:
+            print(
+                f"  project={f['project_id']} form={f['form_id']} "
+                f"submission={f['instance_id']} file={f['filename']}"
+            )
+            print(f"    error: {f['error']}")
 
     return 0
 
