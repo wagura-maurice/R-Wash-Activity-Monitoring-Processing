@@ -219,6 +219,98 @@ def download_images_for_project(name, project_id, form_id, images_root=IMAGES_RO
     }
 
 
+def correct_image_orientations(images_root=IMAGES_ROOT, verbose=True):
+    """Scan all images in *images_root* and re-save them with correct orientation.
+
+    Uses EXIF orientation metadata (via ``ImageOps.exif_transpose``) to rotate
+    each image upright.  For images with no EXIF orientation tag that are in
+    landscape mode, a best-effort 90-degree rotation is applied to force
+    portrait orientation.
+
+    Files that are already correctly oriented or that cannot be opened as
+    images are left untouched.
+
+    Returns a dict with counts: corrected, skipped, failed.
+    """
+    local_dir = Path(images_root).resolve()
+    if not local_dir.is_dir():
+        print(f"[ORIENT] Images directory not found: {local_dir}", flush=True)
+        return {"corrected": 0, "skipped": 0, "failed": 0}
+
+    image_exts = {".jpg", ".jpeg", ".png", ".webp"}
+    local_files = sorted(
+        p for p in local_dir.iterdir()
+        if p.is_file() and p.suffix.lower() in image_exts and p.stat().st_size > 0
+    )
+    if not local_files:
+        print(f"[ORIENT] No image files found in {local_dir}", flush=True)
+        return {"corrected": 0, "skipped": 0, "failed": 0}
+
+    corrected = 0
+    skipped = 0
+    failed = 0
+
+    for idx, local_path in enumerate(local_files, 1):
+        try:
+            with Image.open(local_path) as image:
+                exif = image.getexif()
+                orientation = exif.get(0x0112) if exif else None
+
+                # Determine if correction is needed
+                needs_correction = False
+                if orientation is not None and orientation != 1:
+                    needs_correction = True
+                elif orientation is None and image.width > image.height:
+                    needs_correction = True
+
+                if not needs_correction:
+                    skipped += 1
+                    continue
+
+                # Apply orientation correction
+                corrected_image = _apply_image_orientation(image)
+
+                # Save back in the same format
+                suffix = local_path.suffix.lower()
+                save_kwargs = {}
+                if suffix in {".jpg", ".jpeg"}:
+                    if corrected_image.mode not in {"RGB", "L"}:
+                        corrected_image = corrected_image.convert("RGB")
+                    save_kwargs = {"format": "JPEG", "quality": 85, "optimize": True}
+                elif suffix == ".png":
+                    if corrected_image.mode not in {"1", "L", "P", "RGB", "RGBA", "LA"}:
+                        corrected_image = corrected_image.convert(
+                            "RGBA" if "A" in corrected_image.getbands() else "RGB"
+                        )
+                    save_kwargs = {"format": "PNG", "optimize": True, "compress_level": 9}
+                else:
+                    if corrected_image.mode not in {"RGB", "RGBA"}:
+                        corrected_image = corrected_image.convert(
+                            "RGBA" if "A" in corrected_image.getbands() else "RGB"
+                        )
+                    save_kwargs = {"format": "WEBP", "quality": 85, "method": 6}
+
+                temp_path = local_path.with_suffix(f"{local_path.suffix}.oriented")
+                corrected_image.save(temp_path, **save_kwargs)
+                temp_path.replace(local_path)
+                corrected += 1
+
+                if verbose and idx % 50 == 0:
+                    print(f"[ORIENT] Processed {idx}/{len(local_files)}…", flush=True)
+
+        except (OSError, ValueError, UnidentifiedImageError) as exc:
+            failed += 1
+            if verbose:
+                print(f"[ORIENT] FAILED  {local_path.name}: {exc}", flush=True)
+
+    print(
+        f"\n[ORIENT] Orientation pass complete: "
+        f"corrected={corrected}, skipped={skipped}, failed={failed}",
+        flush=True,
+    )
+    return {"corrected": corrected, "skipped": skipped, "failed": failed}
+
+
 def upload_images_to_ftp(
     images_root=IMAGES_ROOT,
     host=FTP_HOST,
@@ -427,6 +519,10 @@ def main(argv):
                 print(f"    error: {f['error']}")
 
     if do_upload:
+        print("\n=== Image Orientation Correction ===")
+        orient_summary = correct_image_orientations()
+        summary["orientation"] = orient_summary
+
         print("\n=== FTPS Upload to rwash.net ===")
         upload_summary = upload_images_to_ftp()
         summary["ftp_upload"] = upload_summary
