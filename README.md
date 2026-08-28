@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This project provides an automated data pipeline for ingesting, cleaning, and loading activity monitoring questionnaire data from ODK Central into a Microsoft SQL Server database. The processed data feeds the R-WASH Power BI reporting dashboard, enabling real-time monitoring of WASH (Water, Sanitation, and Hygiene) activities across refugee camps in Ethiopia, Sudan, and Somalia.
+This project provides an automated data pipeline for ingesting, cleaning, and loading activity monitoring questionnaire data from ODK Central into a Microsoft SQL Server database. It also downloads, processes, and uploads image attachments to a remote FTPS server. The processed data feeds the R-WASH Power BI reporting dashboard, enabling real-time monitoring of WASH (Water, Sanitation, and Hygiene) activities across refugee camps in Ethiopia, Sudan, and Somalia.
 
 ## System Architecture
 
@@ -31,7 +31,7 @@ The data pipeline connects five core systems in sequence:
 
 ## Data Pipeline
 
-The pipeline processes data through 5 sequential stages, managed by numbered Python scripts:
+The pipeline processes data through 8 sequential stages, managed by numbered Python scripts:
 
 ### Stage 1: Data Consolidation (`001-consolidate_odk_data.py`)
 
@@ -62,6 +62,7 @@ The pipeline processes data through 5 sequential stages, managed by numbered Pyt
   - Site name + CountryId → SiteId lookup
   - GPS validation and fallback (uses reference coordinates if missing)
   - Forward-fill instance metadata across multi-image rows
+  - Image extension normalization: non-standard extensions (`.heic`, `.png`, etc.) rewritten to `.jpg` to match post-conversion filenames
   - Generate mapped JSON with database schema alignment
 - **Output**: 
   - `data/mapped/mapped_data_*.json`
@@ -76,6 +77,42 @@ The pipeline processes data through 5 sequential stages, managed by numbered Pyt
   - Skips only if exact match exists
 - **Output**: Populated `ProjectImages` table in SQL Server
 
+### Stage 6: Image Download (`006-download_images.py`)
+
+- **Purpose**: Download image attachments from ODK Central
+- **Input**: ODK Central API (authenticated via env vars)
+- **Process**:
+  - Fetches submission data for each configured project
+  - Downloads image attachments with EXIF orientation correction applied during save
+  - Existing local files are never overwritten (reused as-is)
+- **Output**: Image files in `data/images/`
+- **See also**: [Image Pipeline docs](docs/image-pipeline.md)
+
+### Stage 7: Image Conversion (`007-convert_nonstandard_images.py`)
+
+- **Purpose**: Convert non-standard image formats to `.jpg`
+- **Input**: Image files in `data/images/`
+- **Process**:
+  - Scans for `.heic`, `.png`, `.webp`, `.bmp`, `.gif`, `.tiff`, `.avif` files
+  - Converts each to `.jpg` with quality=95 and EXIF orientation correction
+  - Deletes originals by default (`--keep` to preserve, `--dry-run` to preview)
+  - Requires `pillow-heif` for HEIC/HEIF support
+- **Output**: Uniform `.jpg` files in `data/images/`
+- **See also**: [Image Pipeline docs](docs/image-pipeline.md)
+
+### Stage 8: Orientation Correction & FTPS Upload (`008-upload_sync_images.py`)
+
+- **Purpose**: Final orientation pass and upload to rwash.net
+- **Input**: Processed `.jpg` files in `data/images/`
+- **Process**:
+  - Scans all images and applies EXIF orientation correction (upright/portrait)
+  - Uploads to rwash.net via explicit FTPS
+  - Never overwrites existing remote files
+  - 3x retry logic with reconnection on timeouts
+- **Output**: Images accessible at `https://rwash.net/{filename}`
+- **Flags**: `--orient-only`, `--upload-only`
+- **See also**: [Image Pipeline docs](docs/image-pipeline.md)
+
 ## Project Structure
 
 ```
@@ -83,14 +120,24 @@ R-Wash-Activity-Monitoring-Processing/
 ├── data/
 │   ├── raw/                    # ODK Excel exports
 │   ├── consolidated/           # Stage 1 output
-│   └── mapped/                 # Stage 4 output (JSON + manifests)
+│   ├── mapped/                 # Stage 4 output (JSON + manifests)
+│   └── images/                 # Stages 6-8 image pipeline output
+├── docs/                       # Detailed documentation
+│   ├── image-pipeline.md       # Image acquisition, conversion & upload
+│   ├── database-schema.md      # SQL Server table structures
+│   ├── odk-projects.md         # ODK Central project registry
+│   └── configuration.md        # Environment variables & credentials
 ├── src/
 │   ├── 001-consolidate_odk_data.py
 │   ├── 002-add_missing_sites.py
 │   ├── 003-fix_gps_dynamic.py
 │   ├── 004-generate_import_array.py
-│   └── 005-insert_to_project_images.py
-├── .env                        # Database credentials (not in git)
+│   ├── 005-insert_to_project_images.py
+│   ├── 006-download_images.py
+│   ├── 007-convert_nonstandard_images.py
+│   ├── 008-upload_sync_images.py
+│   └── odk_sql_helpers.py      # Shared ODK Central API helpers
+├── .env                        # Credentials (not in git)
 ├── .env.example                # Template for credentials
 ├── .gitignore                  # Excludes .env and data files
 ├── requirements.txt            # Python dependencies
@@ -122,20 +169,37 @@ cp .env.example .env
 
 ### Configuration
 
-Create `.env` file in project root:
+Create `.env` file in project root (see `.env.example` for template):
 
 ```env
+# Database
 DB_SERVER=localhost,1433
 DB_DATABASE=WashMay2026
 DB_USERNAME=your_username
 DB_PASSWORD=your_password
+
+# ODK Central API
+ODK_CENTRAL_URL=https://r-washingtesting.com
+ODK_CENTRAL_EMAIL=your_email@example.com
+ODK_CENTRAL_PASSWORD=your_password
+
+# FTPS upload (rwash.net)
+FTP_HOST=ftp.rwash.net
+FTP_PORT=21
+FTP_USER=your_ftp_user
+FTP_PASSWORD=your_ftp_password
+FTP_REMOTE_DIR=/
 ```
+
+See [Configuration docs](docs/configuration.md) for details.
 
 ### Running the Pipeline
 
 Execute scripts in order:
 
 ```bash
+# --- Data Pipeline ---
+
 # Stage 1: Consolidate raw ODK exports
 python src/001-consolidate_odk_data.py
 
@@ -154,6 +218,29 @@ python src/004-generate_import_array.py
 python src/005-insert_to_project_images.py
 # Or specify custom JSON:
 # python src/005-insert_to_project_images.py --file path/to/custom.json
+
+# --- Image Pipeline ---
+
+# Stage 6: Download images from ODK Central
+python src/006-download_images.py
+# Or download specific projects:
+# python src/006-download_images.py SomaliaGarowe EthiopiaV3
+# List available projects:
+# python src/006-download_images.py --list
+
+# Stage 7: Convert non-standard image formats to .jpg
+python src/007-convert_nonstandard_images.py
+# Preview without changes:
+# python src/007-convert_nonstandard_images.py --dry-run
+# Keep originals:
+# python src/007-convert_nonstandard_images.py --keep
+
+# Stage 8: Orientation correction + FTPS upload
+python src/008-upload_sync_images.py
+# Orientation only:
+# python src/008-upload_sync_images.py --orient-only
+# Upload only:
+# python src/008-upload_sync_images.py --upload-only
 ```
 
 ## Data Schema
@@ -201,6 +288,14 @@ Key columns from ODK Excel exports:
 - **Upsert Logic**: Updates existing records, inserts new ones
 - **Idempotent**: Safe to re-run on same dataset
 
+### Image Pipeline
+
+- **Acquire**: Downloads image attachments from ODK Central with no-overwrite logic
+- **Process**: Converts non-standard formats (HEIC, PNG, WebP, etc.) to JPG
+- **Orient**: EXIF-based orientation correction ensures all images are upright
+- **Sync**: FTPS upload to rwash.net with retry logic and no remote overwrites
+- **Extension normalization**: Import array URLs use `.jpg` extensions to match post-conversion filenames
+
 ### Audit Trail
 
 Each pipeline run generates:
@@ -209,6 +304,15 @@ Each pipeline run generates:
   - Country/site breakdowns
   - GPS statistics (original, fallback, bad)
   - Sites missing GPS reference
+
+## Documentation
+
+Detailed documentation is available in the [`docs/`](docs/) folder:
+
+- [Image Pipeline](docs/image-pipeline.md) — Stages 6-8: download, convert, upload
+- [Database Schema](docs/database-schema.md) — SQL Server table structures
+- [ODK Projects](docs/odk-projects.md) — Configured ODK Central project registry
+- [Configuration](docs/configuration.md) — Environment variables and credentials
 
 ## Troubleshooting
 
