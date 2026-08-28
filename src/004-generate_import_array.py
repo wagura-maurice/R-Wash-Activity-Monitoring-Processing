@@ -9,7 +9,26 @@ import pyodbc
 import os
 import glob
 import json
+from pathlib import Path
 from dotenv import load_dotenv
+
+# Extensions that 007-convert_nonstandard_images.py will convert to .jpg
+NONSTANDARD_IMAGE_EXTS = {
+    ".png", ".webp", ".bmp", ".gif", ".tiff", ".tif",
+    ".heic", ".heif", ".avif",
+}
+
+
+def normalize_image_extension(filename):
+    """Return *filename* with its extension converted to .jpg if it is
+    a non-standard type that 007-convert_nonstandard_images.py will convert.
+
+    Standard .jpg/.jpeg extensions are left unchanged.
+    """
+    ext = Path(filename).suffix.lower()
+    if ext in NONSTANDARD_IMAGE_EXTS:
+        return Path(filename).with_suffix(".jpg").name
+    return filename
 
 # Load environment variables from .env file
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), '..', '.env'))
@@ -244,6 +263,9 @@ def map_excel_to_db(df, country_mapping, site_mapping, site_ranges, site_name_to
             # Extract just the filename and create new URL
             if isinstance(image_path, str) and '/' in image_path:
                 filename = image_path.split('/')[-1].split('?')[0]
+                # Normalize non-standard extensions (e.g. .heic, .png) to .jpg
+                # to match what 007-convert_nonstandard_images.py will produce.
+                filename = normalize_image_extension(filename)
                 mapped_row['ImagePath'] = f"https://rwash.net/{filename}"
             else:
                 mapped_row['ImagePath'] = image_path
