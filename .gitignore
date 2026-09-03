@@ -31,3 +31,4 @@ ENV/
 .DS_Store
 Thumbs.db
 data/raw/*
+data/image_processing_log.json
