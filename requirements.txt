@@ -2,17 +2,22 @@
 # Python dependencies for processing ODK Central exports
 
 # Data processing
-pandas>=2.0.0
-openpyxl>=3.1.0
+pandas>=2.0.0              # Used in: 001, 004, 006, odk_sql_helpers
+openpyxl>=3.1.0            # Used by pandas for Excel file handling (001)
 
 # Database connectivity
-pyodbc>=4.0.35
+pyodbc>=4.0.35             # Used in: 002, 003, 004, 005
+SQLAlchemy>=2.0.0          # Used in: odk_sql_helpers
 
 # Environment management
-python-dotenv>=1.0.0
+python-dotenv>=1.0.0       # Used in: 002, 003, 004, 005, 006, 007, 008
 
-# ODK Central and image processing
-requests>=2.31.0
-Pillow>=10.0.0
-pillow-heif>=0.15.0
-SQLAlchemy>=2.0.0
+# HTTP requests
+requests>=2.31.0           # Used in: odk_sql_helpers for ODK Central API
+
+# Image processing
+Pillow>=10.0.0             # Used in: 007, odk_sql_helpers
+pillow-heif>=0.15.0        # Optional: Only needed for HEIC/HEIF files (007)
+
+# Email notifications (standard library - no pip install needed)
+# smtplib, email.mime.multipart, email.mime.text, email.utils are built-in
