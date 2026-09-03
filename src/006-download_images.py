@@ -2,107 +2,51 @@
 """Download images from ODK Central into data/images/.
 
 Acquires image attachments for all configured projects and saves them locally
-with EXIF orientation correction applied during the save.  Existing files are
-never overwritten (reused as-is).
+as raw files without any processing, validation, or transformation.
+Existing files are never overwritten (reused as-is).
 
-Uploading to rwash.net is handled separately by 008-upload_sync_images.py,
-which should run after 007-convert_nonstandard_images.py normalizes extensions.
+Image processing (format conversion, orientation correction) is handled by
+007-convert_nonstandard_images.py, and uploading to rwash.net is handled by
+008-upload_sync_images.py.
 
 Usage:
     # download images for all projects
-    python src/006-download_sync_images.py
+    python src/006-download_images.py
 
     # download images for specific projects only
-    python src/006-download_sync_images.py SomaliaGarowe EthiopiaV3
+    python src/006-download_images.py SomaliaGarowe EthiopiaV3
 
     # list available project names
-    python src/006-download_sync_images.py --list
+    python src/006-download_images.py --list
 """
 
 import os
 import sys
-from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
-from PIL import Image, ImageOps, UnidentifiedImageError
 
 import odk_sql_helpers as odk_helpers
+from email_notifier import send_success_email, send_failure_email, send_partial_success_email
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
-
-# Increase PIL image size limit to handle large images (set to None to disable limit)
-Image.MAX_IMAGE_PIXELS = None
-
-
-def _apply_image_orientation(image):
-    """Return an image corrected for EXIF orientation and forced to portrait if no EXIF."""
-    exif = image.getexif()
-    orientation = exif.get(0x0112) if exif else None
-    image = ImageOps.exif_transpose(image)
-    if orientation is None and image.width > image.height:
-        # No EXIF guidance; rotate to portrait orientation as a best effort.
-        image = image.rotate(90, expand=True)
-    return image
-
 
 # Track attachments that failed to download so we can report them at the end.
 FAILED_ATTACHMENTS = []
 
 
 class SyncImageDownloader(odk_helpers.ODKImageDownloader):
-    """ODKImageDownloader that is resilient and applies orientation correction.
+    """ODKImageDownloader that is resilient and downloads raw files.
 
     - Skips a failed attachment instead of aborting the whole run.
-    - Applies EXIF orientation and, for images without EXIF guidance, rotates
-      landscape captures to portrait.
+    - Downloads files as-is without any processing, validation, or transformation.
     """
 
     def _compress_and_write_image(self, content, target_path):
-        suffix = target_path.suffix.lower()
-
-        if suffix not in {".jpg", ".jpeg", ".png", ".webp"}:
-            self._write_raw_bytes(content, target_path)
-            return
-
-        try:
-            with Image.open(BytesIO(content)) as image:
-                image = _apply_image_orientation(image)
-                save_kwargs = {}
-                processed_image = image
-
-                if suffix in {".jpg", ".jpeg"}:
-                    if image.mode not in {"RGB", "L"}:
-                        processed_image = image.convert("RGB")
-                    save_kwargs = {
-                        "format": "JPEG",
-                        "quality": self.jpeg_quality,
-                        "optimize": True,
-                    }
-                elif suffix == ".png":
-                    if image.mode not in {"1", "L", "P", "RGB", "RGBA", "LA"}:
-                        processed_image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
-                    save_kwargs = {
-                        "format": "PNG",
-                        "optimize": True,
-                        "compress_level": self.png_compress_level,
-                    }
-                else:
-                    if image.mode not in {"RGB", "RGBA"}:
-                        processed_image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
-                    save_kwargs = {
-                        "format": "WEBP",
-                        "quality": self.webp_quality,
-                        "method": 6,
-                    }
-
-                temp_path = target_path.with_suffix(f"{target_path.suffix}.part")
-                processed_image.save(temp_path, **save_kwargs)
-                temp_path.replace(target_path)
-        except (OSError, ValueError, UnidentifiedImageError):
-            self._write_raw_bytes(content, target_path)
+        """Write raw content to target path without any processing."""
+        self._write_raw_bytes(content, target_path)
 
     def download_attachment(self, project_id, form_id, instance_id, filename, table_name=None):
         try:
@@ -189,7 +133,7 @@ def download_images_for_project(name, project_id, form_id, images_root=IMAGES_RO
     image_downloader._report_progress(force=True)
     failed = [f for f in FAILED_ATTACHMENTS if f["project_id"] == project_id and f["form_id"] == form_id]
     print(
-        f"[{name}] image processing complete: "
+        f"[{name}] image download complete: "
         f"processed={image_downloader.processed_count}, "
         f"downloaded={image_downloader.downloaded_count}, "
         f"reused={image_downloader.reused_count}, "
@@ -248,7 +192,59 @@ def main(argv):
             )
             print(f"    error: {f['error']}")
 
-    return 0
+    # Send email notification
+    try:
+        # Calculate overall statistics
+        total_submissions = sum(stats.get('submissions', 0) for stats in summary.values() if isinstance(stats, dict))
+        total_processed = sum(stats.get('processed', 0) for stats in summary.values() if isinstance(stats, dict))
+        total_downloaded = sum(stats.get('downloaded', 0) for stats in summary.values() if isinstance(stats, dict))
+        total_reused = sum(stats.get('reused', 0) for stats in summary.values() if isinstance(stats, dict))
+        total_failed = sum(stats.get('failed', 0) for stats in summary.values() if isinstance(stats, dict))
+        total_errors = sum(1 for stats in summary.values() if isinstance(stats, dict) and 'error' in stats)
+
+        email_summary = {
+            'Projects Processed': len(summary),
+            'Total Submissions': total_submissions,
+            'Total Images Processed': total_processed,
+            'New Downloads': total_downloaded,
+            'Reused Existing': total_reused,
+            'Failed Downloads': total_failed,
+            'Project Errors': total_errors,
+        }
+
+        # Determine status and send appropriate email
+        if total_errors > 0:
+            # Complete failure for some projects
+            error_details = "\n".join([
+                f"{name}: {stats.get('error', 'Unknown error')}" 
+                for name, stats in summary.items() 
+                if isinstance(stats, dict) and 'error' in stats
+            ])
+            send_failure_email("006-download_images.py", email_summary, error_details)
+            return 1
+        elif total_failed > 0:
+            # Partial success - some downloads failed
+            failed_details = "\n".join([
+                f"project={f['project_id']} form={f['form_id']} "
+                f"submission={f['instance_id']} file={f['filename']}\n"
+                f"    error: {f['error']}"
+                for f in FAILED_ATTACHMENTS
+            ])
+            send_partial_success_email("006-download_images.py", email_summary, failed_details)
+            return 0
+        else:
+            # Complete success
+            success_details = "\n".join([
+                f"{name}: {stats}" 
+                for name, stats in summary.items() 
+                if isinstance(stats, dict)
+            ])
+            send_success_email("006-download_images.py", email_summary, success_details)
+            return 0
+
+    except Exception as email_exc:
+        print(f"WARNING: Failed to send email notification: {email_exc}", flush=True)
+        return 0  # Don't fail the script just because email failed
 
 
 if __name__ == "__main__":

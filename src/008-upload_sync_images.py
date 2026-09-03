@@ -1,25 +1,16 @@
 #!/usr/bin/env python3
-"""Apply orientation correction and upload images to rwash.net via FTPS.
+"""Upload processed images to rwash.net via FTPS.
 
 Runs as the final step in the image pipeline:
-    006-download_sync_images.py          → acquire from ODK Central
-    007-convert_nonstandard_images.py    → normalize extensions to .jpg
-    008-upload_sync_images.py            → orientation correction + FTPS upload
+    006-download_images.py               → acquire from ODK Central
+    007-convert_nonstandard_images.py    → normalize extensions and apply orientation correction
+    008-upload_sync_images.py            → FTPS upload only
 
-This script:
-  1. Scans data/images/ for image files and applies EXIF orientation correction.
-  2. Uploads all local images to the rwash.net FTP server (explicit FTPS).
-  3. Never overwrites existing local or remote files.
+This script uploads all local images to the rwash.net FTP server (explicit FTPS).
+Never overwrites existing local or remote files.
 
 Usage:
-    # full sync (orientation correction + upload)
     python src/008-upload_sync_images.py
-
-    # orientation correction only, skip upload
-    python src/008-upload_sync_images.py --orient-only
-
-    # upload only, skip orientation correction
-    python src/008-upload_sync_images.py --upload-only
 """
 
 import os
@@ -30,12 +21,10 @@ from ftplib import FTP_TLS, error_perm
 from pathlib import Path
 
 from dotenv import load_dotenv
-from PIL import Image, ImageOps, UnidentifiedImageError
+from email_notifier import send_success_email, send_failure_email, send_partial_success_email
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), "..", ".env"))
-
-Image.MAX_IMAGE_PIXELS = None
 
 IMAGES_ROOT = os.path.join(BASE_DIR, "data", "images")
 
@@ -45,105 +34,6 @@ FTP_PORT = int(os.getenv("FTP_PORT", "21"))
 FTP_USER = os.getenv("FTP_USER", "root@rwash.net")
 FTP_PASSWORD = os.getenv("FTP_PASSWORD", "7;B4-Y!7AK74aPj8")
 FTP_REMOTE_DIR = os.getenv("FTP_REMOTE_DIR", "/")
-
-
-def _apply_image_orientation(image):
-    """Return an image corrected for EXIF orientation and forced to portrait if no EXIF."""
-    exif = image.getexif()
-    orientation = exif.get(0x0112) if exif else None
-    image = ImageOps.exif_transpose(image)
-    if orientation is None and image.width > image.height:
-        image = image.rotate(90, expand=True)
-    return image
-
-
-def correct_image_orientations(images_root=IMAGES_ROOT, verbose=True):
-    """Scan all images in *images_root* and re-save them with correct orientation.
-
-    Uses EXIF orientation metadata (via ``ImageOps.exif_transpose``) to rotate
-    each image upright.  For images with no EXIF orientation tag that are in
-    landscape mode, a best-effort 90-degree rotation is applied to force
-    portrait orientation.
-
-    Files that are already correctly oriented or that cannot be opened as
-    images are left untouched.
-
-    Returns a dict with counts: corrected, skipped, failed.
-    """
-    local_dir = Path(images_root).resolve()
-    if not local_dir.is_dir():
-        print(f"[ORIENT] Images directory not found: {local_dir}", flush=True)
-        return {"corrected": 0, "skipped": 0, "failed": 0}
-
-    image_exts = {".jpg", ".jpeg", ".png", ".webp"}
-    local_files = sorted(
-        p for p in local_dir.iterdir()
-        if p.is_file() and p.suffix.lower() in image_exts and p.stat().st_size > 0
-    )
-    if not local_files:
-        print(f"[ORIENT] No image files found in {local_dir}", flush=True)
-        return {"corrected": 0, "skipped": 0, "failed": 0}
-
-    corrected = 0
-    skipped = 0
-    failed = 0
-
-    for idx, local_path in enumerate(local_files, 1):
-        try:
-            with Image.open(local_path) as image:
-                exif = image.getexif()
-                orientation = exif.get(0x0112) if exif else None
-
-                needs_correction = False
-                if orientation is not None and orientation != 1:
-                    needs_correction = True
-                elif orientation is None and image.width > image.height:
-                    needs_correction = True
-
-                if not needs_correction:
-                    skipped += 1
-                    continue
-
-                corrected_image = _apply_image_orientation(image)
-
-                suffix = local_path.suffix.lower()
-                save_kwargs = {}
-                if suffix in {".jpg", ".jpeg"}:
-                    if corrected_image.mode not in {"RGB", "L"}:
-                        corrected_image = corrected_image.convert("RGB")
-                    save_kwargs = {"format": "JPEG", "quality": 85, "optimize": True}
-                elif suffix == ".png":
-                    if corrected_image.mode not in {"1", "L", "P", "RGB", "RGBA", "LA"}:
-                        corrected_image = corrected_image.convert(
-                            "RGBA" if "A" in corrected_image.getbands() else "RGB"
-                        )
-                    save_kwargs = {"format": "PNG", "optimize": True, "compress_level": 9}
-                else:
-                    if corrected_image.mode not in {"RGB", "RGBA"}:
-                        corrected_image = corrected_image.convert(
-                            "RGBA" if "A" in corrected_image.getbands() else "RGB"
-                        )
-                    save_kwargs = {"format": "WEBP", "quality": 85, "method": 6}
-
-                temp_path = local_path.with_suffix(f"{local_path.suffix}.oriented")
-                corrected_image.save(temp_path, **save_kwargs)
-                temp_path.replace(local_path)
-                corrected += 1
-
-                if verbose and idx % 50 == 0:
-                    print(f"[ORIENT] Processed {idx}/{len(local_files)}…", flush=True)
-
-        except (OSError, ValueError, UnidentifiedImageError) as exc:
-            failed += 1
-            if verbose:
-                print(f"[ORIENT] FAILED  {local_path.name}: {exc}", flush=True)
-
-    print(
-        f"\n[ORIENT] Orientation pass complete: "
-        f"corrected={corrected}, skipped={skipped}, failed={failed}",
-        flush=True,
-    )
-    return {"corrected": corrected, "skipped": skipped, "failed": failed}
 
 
 def upload_images_to_ftp(
@@ -161,19 +51,19 @@ def upload_images_to_ftp(
     The function checks the remote directory listing before each upload and
     skips any filename that is already present.
 
-    Returns a dict with counts: uploaded, skipped, failed.
+    Returns a dict with counts: uploaded, skipped, failed, and failed_list.
     """
     local_dir = Path(images_root).resolve()
     if not local_dir.is_dir():
         print(f"[FTP] Images directory not found: {local_dir}", flush=True)
-        return {"uploaded": 0, "skipped": 0, "failed": 0}
+        return {"uploaded": 0, "skipped": 0, "failed": 0, "failed_list": []}
 
     local_files = sorted(
         p for p in local_dir.iterdir() if p.is_file() and p.stat().st_size > 0
     )
     if not local_files:
         print(f"[FTP] No image files found in {local_dir}", flush=True)
-        return {"uploaded": 0, "skipped": 0, "failed": 0}
+        return {"uploaded": 0, "skipped": 0, "failed": 0, "failed_list": []}
 
     def _connect_ftp():
         """Create a fresh FTPS connection with generous timeouts."""
@@ -199,7 +89,7 @@ def upload_images_to_ftp(
                 time.sleep(3)
             else:
                 print(f"[FTP] Could not connect after 3 attempts: {exc}", flush=True)
-                return {"uploaded": 0, "skipped": 0, "failed": len(local_files)}
+                return {"uploaded": 0, "skipped": 0, "failed": len(local_files), "failed_list": []}
 
     if verbose:
         print(f"[FTP] Connected. Server reply: {ftp.welcome}", flush=True)
@@ -295,31 +185,49 @@ def upload_images_to_ftp(
         for item in failed_list:
             print(f"  {item['filename']}: {item['error']}", flush=True)
 
-    return {"uploaded": uploaded, "skipped": skipped, "failed": failed}
+    return {"uploaded": uploaded, "skipped": skipped, "failed": failed, "failed_list": failed_list}
 
 
 def main(argv):
-    orient_only = "--orient-only" in argv
-    upload_only = "--upload-only" in argv
+    print("\n=== FTPS Upload to rwash.net ===")
+    summary = upload_images_to_ftp()
+    
+    print("\n=== Upload Summary ===")
+    print(f"  uploaded={summary['uploaded']}, skipped={summary['skipped']}, failed={summary['failed']}")
+    
+    # Send email notification
+    try:
+        email_summary = {
+            'FTP Server': f"{FTP_HOST}:{FTP_PORT}",
+            'Local Directory': IMAGES_ROOT,
+            'Remote Directory': FTP_REMOTE_DIR,
+            'Total Files Found': summary['uploaded'] + summary['skipped'] + summary['failed'],
+            'Files Uploaded': summary['uploaded'],
+            'Files Skipped (Already on Server)': summary['skipped'],
+            'Failed Uploads': summary['failed'],
+        }
 
-    do_orient = not upload_only
-    do_upload = not orient_only
+        # Determine status and send appropriate email
+        if summary['failed'] > 0:
+            # Partial success - some uploads failed
+            failed_details = "\n".join([
+                f"{item['filename']}: {item['error']}" 
+                for item in summary['failed_list']
+            ])
+            send_partial_success_email("008-upload_sync_images.py", email_summary, failed_details)
+        elif summary['uploaded'] == 0 and summary['skipped'] > 0:
+            # All files were already on server - this is still success but worth noting
+            skip_details = f"All {summary['skipped']} files were already present on the remote server."
+            send_success_email("008-upload_sync_images.py", email_summary, skip_details)
+        else:
+            # Complete success with actual uploads
+            success_details = f"Successfully uploaded {summary['uploaded']} new files to the FTP server."
+            send_success_email("008-upload_sync_images.py", email_summary, success_details)
 
-    summary = {}
-
-    if do_orient:
-        print("\n=== Image Orientation Correction ===")
-        summary["orientation"] = correct_image_orientations()
-
-    if do_upload:
-        print("\n=== FTPS Upload to rwash.net ===")
-        summary["ftp_upload"] = upload_images_to_ftp()
-
-    print("\n=== Sync Summary ===")
-    for step, stats in summary.items():
-        print(f"  {step:20s} {stats}")
-
-    return 0
+    except Exception as email_exc:
+        print(f"WARNING: Failed to send email notification: {email_exc}", flush=True)
+    
+    return 0 if summary['failed'] == 0 else 1
 
 
 if __name__ == "__main__":

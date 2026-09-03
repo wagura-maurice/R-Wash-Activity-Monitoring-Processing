@@ -31,6 +31,38 @@ All credentials and environment-specific settings are managed via a `.env` file 
 | `FTP_PASSWORD` | Yes | FTPS password | — |
 | `FTP_REMOTE_DIR` | No | Remote upload directory | `/` |
 
+### Email Notifications (SMTP)
+
+| Variable | Required | Description | Default |
+|----------|----------|-------------|---------|
+| `MAIL_MAILER` | No | Email transport method | `smtp` |
+| `MAIL_HOST` | Yes | SMTP server hostname | — |
+| `MAIL_PORT` | Yes | SMTP server port | `2525` |
+| `MAIL_USERNAME` | Yes | SMTP username | — |
+| `MAIL_PASSWORD` | Yes | SMTP password | — |
+| `MAIL_TO` | Yes | Primary recipient email | — |
+| `MAIL_CC` | No | CC recipient email | — |
+| `MAIL_FROM` | No | Sender email address | `noreply@rwash-monitoring.com` |
+| `MAIL_FROM_NAME` | No | Sender display name | `R-WASH Monitoring System` |
+
+**Email Features:**
+- Professional R-WASH branding with UNICEF logo
+- Status indicators: Success (green), Partial (gold), Failure (red)
+- Processing statistics for each stage
+- Contact information in footer
+- Professional subject lines (no file extensions)
+
+**Example Configuration (Mailtrap Sandbox):**
+```env
+MAIL_MAILER=smtp
+MAIL_HOST=sandbox.smtp.mailtrap.io
+MAIL_PORT=2525
+MAIL_USERNAME=your_mailtrap_username
+MAIL_PASSWORD=your_mailtrap_password
+MAIL_TO=recipient@example.com
+MAIL_CC=cc_recipient@example.com
+```
+
 ## Setup
 
 ```bash
@@ -66,7 +98,7 @@ pip install -r requirements.txt
 | `pandas` | Data manipulation and Excel parsing |
 | `openpyxl` | Excel file reading/writing |
 | `pyodbc` | SQL Server ODBC connectivity |
-| `python-dotenv` | `.env` file loading |
+| `python-dotenv` | `.env` file loading and email configuration |
 | `requests` | HTTP client for ODK Central API |
 | `Pillow` | Image processing (compression, EXIF orientation) |
 | `pillow-heif` | HEIC/HEIF image format support |

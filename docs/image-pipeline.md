@@ -32,6 +32,16 @@ The `SyncImageDownloader` class (extends `ODKImageDownloader`) maintains a `_kno
 
 Failed attachments are caught and recorded in `FAILED_ATTACHMENTS` instead of aborting the run. A summary of failures is printed at the end.
 
+### Email Notifications
+
+Upon completion, the script sends an email notification with:
+- Professional R-WASH branding with UNICEF logo
+- Status indicator (Success/Partial/Failure)
+- Download statistics (projects processed, submissions, new downloads, reused files, failures)
+- Contact information in footer
+
+See [Configuration](configuration.md#email-notifications-smtp) for email setup.
+
 ### Usage
 
 ```bash
@@ -104,6 +114,16 @@ pip install pillow-heif
 
 If not installed, HEIC files are skipped with a warning.
 
+### Email Notifications
+
+Upon completion, the script sends an email notification with:
+- Professional R-WASH branding with UNICEF logo
+- Status indicator (Success/Partial/Failure)
+- Conversion statistics (files converted, orientation corrections, cache hits, failures)
+- Contact information in footer
+
+See [Configuration](configuration.md#email-notifications-smtp) for email setup.
+
 ## Stage 8: Upload (`008-upload_sync_images.py`)
 
 ### Purpose
@@ -149,6 +169,17 @@ python src/008-upload_sync_images.py --upload-only
 | `FTP_USER` | FTPS username | — |
 | `FTP_PASSWORD` | FTPS password | — |
 | `FTP_REMOTE_DIR` | Remote directory for uploads | `/` |
+
+### Email Notifications
+
+Upon completion, the script sends an email notification with:
+- Professional R-WASH branding with UNICEF logo
+- Status indicator (Success/Partial/Failure)
+- Upload statistics (files uploaded, skipped, failed)
+- FTP server details
+- Contact information in footer
+
+See [Configuration](configuration.md#email-notifications-smtp) for email setup.
 
 ## Extension normalization in Stage 4
 

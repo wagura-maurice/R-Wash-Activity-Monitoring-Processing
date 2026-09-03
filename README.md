@@ -85,6 +85,7 @@ The pipeline processes data through 8 sequential stages, managed by numbered Pyt
   - Fetches submission data for each configured project
   - Downloads image attachments with EXIF orientation correction applied during save
   - Existing local files are never overwritten (reused as-is)
+  - Sends email notification upon completion
 - **Output**: Image files in `data/images/`
 - **See also**: [Image Pipeline docs](docs/image-pipeline.md)
 
@@ -97,6 +98,8 @@ The pipeline processes data through 8 sequential stages, managed by numbered Pyt
   - Converts each to `.jpg` with quality=95 and EXIF orientation correction
   - Deletes originals by default (`--keep` to preserve, `--dry-run` to preview)
   - Requires `pillow-heif` for HEIC/HEIF support
+  - Uses processing cache to avoid re-processing files
+  - Sends email notification upon completion
 - **Output**: Uniform `.jpg` files in `data/images/`
 - **See also**: [Image Pipeline docs](docs/image-pipeline.md)
 
@@ -109,6 +112,7 @@ The pipeline processes data through 8 sequential stages, managed by numbered Pyt
   - Uploads to rwash.net via explicit FTPS
   - Never overwrites existing remote files
   - 3x retry logic with reconnection on timeouts
+  - Sends email notification upon completion
 - **Output**: Images accessible at `https://rwash.net/{filename}`
 - **Flags**: `--orient-only`, `--upload-only`
 - **See also**: [Image Pipeline docs](docs/image-pipeline.md)
@@ -126,7 +130,9 @@ R-Wash-Activity-Monitoring-Processing/
 │   ├── image-pipeline.md       # Image acquisition, conversion & upload
 │   ├── database-schema.md      # SQL Server table structures
 │   ├── odk-projects.md         # ODK Central project registry
-│   └── configuration.md        # Environment variables & credentials
+│   ├── configuration.md        # Environment variables & credentials
+│   ├── cron-jobs.md            # Cron job setup for Ubuntu VPS
+│   └── RWASH_EMAIL_TEMPLATE_GUIDE.md # Email template documentation
 ├── src/
 │   ├── 001-consolidate_odk_data.py
 │   ├── 002-add_missing_sites.py
@@ -136,6 +142,8 @@ R-Wash-Activity-Monitoring-Processing/
 │   ├── 006-download_images.py
 │   ├── 007-convert_nonstandard_images.py
 │   ├── 008-upload_sync_images.py
+│   ├── email_notifier.py       # Email notification module with R-WASH branding
+│   ├── rwash_email_templates.py # Professional email templates
 │   └── odk_sql_helpers.py      # Shared ODK Central API helpers
 ├── .env                        # Credentials (not in git)
 ├── .env.example                # Template for credentials
@@ -273,6 +281,36 @@ Key columns from ODK Excel exports:
 | CountryId | INT | Foreign key to CountriesAll |
 | SiteName | NVARCHAR | Denormalized site name |
 
+## Email Notifications
+
+All image pipeline scripts (006, 007, 008) send professional email notifications upon completion with:
+
+- **R-WASH Branding**: Professional design matching wardwatch2027 project with UNICEF logo
+- **Status Indicators**: Color-coded badges (Success=green, Partial=gold, Failure=red)
+- **Processing Statistics**: Detailed metrics for each stage
+- **Contact Information**: Phone (+254 725 275610) and email (md@globeconcs.com) in footer
+- **Professional Subject Lines**: Clean formatting without file extensions or numbers
+
+### Configuration
+
+Email settings are configured in `.env`:
+
+```env
+MAIL_MAILER=smtp
+MAIL_HOST=your_smtp_host.com
+MAIL_PORT=2525
+MAIL_USERNAME=your_smtp_username
+MAIL_PASSWORD=your_smtp_password
+MAIL_TO=recipient@example.com
+MAIL_CC=cc_recipient@example.com
+```
+
+See [Configuration docs](docs/configuration.md#email-notifications-smtp) for details.
+
+### Automated Execution
+
+For automated daily execution on Ubuntu VPS, see [Cron Jobs documentation](docs/cron-jobs.md).
+
 ## Key Features
 
 ### GPS Data Integrity
@@ -313,6 +351,8 @@ Detailed documentation is available in the [`docs/`](docs/) folder:
 - [Database Schema](docs/database-schema.md) — SQL Server table structures
 - [ODK Projects](docs/odk-projects.md) — Configured ODK Central project registry
 - [Configuration](docs/configuration.md) — Environment variables and credentials
+- [Cron Jobs](docs/cron-jobs.md) — Automated execution setup for Ubuntu VPS
+- [Email Template Guide](docs/RWASH_EMAIL_TEMPLATE_GUIDE.md) — Professional email template documentation
 
 ## Troubleshooting
 
