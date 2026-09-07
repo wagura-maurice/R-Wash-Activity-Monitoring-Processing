@@ -69,25 +69,42 @@ def assign_showdata(data):
 def upsert_record(cursor, record):
     """
     Insert or update a record in ProjectImages table.
-    If (ImagePath, SiteId) exists, update all other columns.
-    Otherwise, insert a new record.
+
+    Match key depends on whether the record has a photo:
+      - Has ImagePath: matched by (ImagePath, SiteId) — a site can have many
+        distinct photos, so the photo link itself disambiguates them.
+      - No ImagePath (a submission with no photo attached): matched by
+        (ActivityId, SiteId) among existing rows where ImagePath IS NULL.
+        ActivityId is the ODK submission's instance ID, unique per
+        submission, so it safely stands in for the missing photo link.
+
     Returns ('inserted', rowcount) or ('updated', rowcount).
+    Raises ValueError if the record cannot be matched/inserted at all
+    (missing SiteId, or missing both ImagePath and ActivityId).
     """
     image_path = record.get('ImagePath')
     site_id = record.get('SiteId')
     instance_id = _get_instance_id(record)
     showdata = record.get('ShowData')
-    
-    if image_path is None or site_id is None:
-        return ('error', 0)
-    
+
+    if site_id is None:
+        raise ValueError('Missing SiteId - cannot insert')
+    if image_path is None and instance_id is None:
+        raise ValueError('Missing both ImagePath and ActivityId - cannot match/dedupe this record')
+
     # Check if record exists
-    cursor.execute(
-        "SELECT COUNT(*) FROM ProjectImages WHERE ImagePath = ? AND SiteId = ?",
-        (image_path, site_id)
-    )
+    if image_path is not None:
+        cursor.execute(
+            "SELECT COUNT(*) FROM ProjectImages WHERE ImagePath = ? AND SiteId = ?",
+            (image_path, site_id)
+        )
+    else:
+        cursor.execute(
+            "SELECT COUNT(*) FROM ProjectImages WHERE ImagePath IS NULL AND ActivityId = ? AND SiteId = ?",
+            (instance_id, site_id)
+        )
     exists = cursor.fetchone()[0] > 0
-    
+
     # Convert string dates to datetime objects if needed
     image_date = record.get('Imagedate')
     if isinstance(image_date, str):
@@ -95,41 +112,73 @@ def upsert_record(cursor, record):
             image_date = datetime.strptime(image_date, '%Y-%m-%d %H:%M:%S')
         except:
             image_date = None
-    
+
     if exists:
         # UPDATE existing record
-        sql = """
-        UPDATE ProjectImages SET
-            ActivityId = ?,
-            ShowData = ?,
-            ImageDescription = ?,
-            Imagedate = ?,
-            Longitude = ?,
-            latitude = ?,
-            ActivityStatus = ?,
-            Comments = ?,
-            ProjectDescription = ?,
-            CompletionPercentage = ?,
-            CountryId = ?,
-            SiteName = ?
-        WHERE ImagePath = ? AND SiteId = ?
-        """
-        values = [
-            instance_id,
-            showdata,
-            record.get('ImageDescription'),
-            image_date,
-            record.get('Longitude'),
-            record.get('latitude'),
-            record.get('ActivityStatus'),
-            record.get('Comments'),
-            record.get('ProjectDescription'),
-            record.get('CompletionPercentage'),
-            record.get('CountryId'),
-            record.get('SiteName'),
-            image_path,
-            site_id
-        ]
+        if image_path is not None:
+            sql = """
+            UPDATE ProjectImages SET
+                ActivityId = ?,
+                ShowData = ?,
+                ImageDescription = ?,
+                Imagedate = ?,
+                Longitude = ?,
+                latitude = ?,
+                ActivityStatus = ?,
+                Comments = ?,
+                ProjectDescription = ?,
+                CompletionPercentage = ?,
+                CountryId = ?,
+                SiteName = ?
+            WHERE ImagePath = ? AND SiteId = ?
+            """
+            values = [
+                instance_id,
+                showdata,
+                record.get('ImageDescription'),
+                image_date,
+                record.get('Longitude'),
+                record.get('latitude'),
+                record.get('ActivityStatus'),
+                record.get('Comments'),
+                record.get('ProjectDescription'),
+                record.get('CompletionPercentage'),
+                record.get('CountryId'),
+                record.get('SiteName'),
+                image_path,
+                site_id
+            ]
+        else:
+            sql = """
+            UPDATE ProjectImages SET
+                ShowData = ?,
+                ImageDescription = ?,
+                Imagedate = ?,
+                Longitude = ?,
+                latitude = ?,
+                ActivityStatus = ?,
+                Comments = ?,
+                ProjectDescription = ?,
+                CompletionPercentage = ?,
+                CountryId = ?,
+                SiteName = ?
+            WHERE ImagePath IS NULL AND ActivityId = ? AND SiteId = ?
+            """
+            values = [
+                showdata,
+                record.get('ImageDescription'),
+                image_date,
+                record.get('Longitude'),
+                record.get('latitude'),
+                record.get('ActivityStatus'),
+                record.get('Comments'),
+                record.get('ProjectDescription'),
+                record.get('CompletionPercentage'),
+                record.get('CountryId'),
+                record.get('SiteName'),
+                instance_id,
+                site_id
+            ]
         cursor.execute(sql, values)
         return ('updated', cursor.rowcount)
     else:

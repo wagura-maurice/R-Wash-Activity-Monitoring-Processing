@@ -697,21 +697,24 @@ def main():
     os.makedirs(base_dir, exist_ok=True)
 
     # Save with timestamp in filename (no 'all', no 'v2', no country suffix)
+    # NOTE: save primary_data (post-consolidation), not mapped_data — primary_data
+    # has Imagedate (and other instance-level fields) backfilled across all rows
+    # of a multi-image instance from the group's most-complete record.
     output_file = os.path.join(base_dir, f"mapped_data_{timestamp}.json")
-    save_as_json(mapped_data, output_file)
+    save_as_json(primary_data, output_file)
 
     # Generate manifest/summary file
     manifest_file = os.path.join(base_dir, f"mapped_data_{timestamp}_manifest.md")
-    generate_manifest(mapped_data, manifest_file, timestamp, gps_actions)
+    generate_manifest(primary_data, manifest_file, timestamp, gps_actions)
 
     # Return the array for programmatic use
     print(f"\n{'='*70}")
     print("ARRAY READY FOR USE")
     print(f"{'='*70}")
-    print(f"\nThe array is available as 'mapped_data' with {len(mapped_data)} records")
+    print(f"\nThe array is available as 'primary_data' with {len(primary_data)} records")
     print(f"Manifest saved to: {manifest_file}")
 
-    return mapped_data
+    return primary_data
 
 if __name__ == "__main__":
     mapped_data = main()  # noqa: F841
