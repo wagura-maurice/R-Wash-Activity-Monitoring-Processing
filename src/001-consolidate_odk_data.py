@@ -5,8 +5,12 @@ Also generates an instance summary report.
 import pandas as pd
 import glob
 import os
+import sys
 from datetime import datetime
 from collections import Counter
+
+if sys.platform == 'win32':
+    sys.stdout.reconfigure(encoding='utf-8')
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RAW_DIR = os.path.join(BASE_DIR, 'data', 'raw')
@@ -15,7 +19,7 @@ INSTANCES_DIR = os.path.join(BASE_DIR, 'data', 'instances')
 
 def load_all_raw_files():
     """Load all RWASH Activity Monitoring Excel files."""
-    pattern = os.path.join(RAW_DIR, 'RWASH_Activity_Monitoring_Questionnaire__*.xlsx')
+    pattern = os.path.join(RAW_DIR, '*Activity_Monitoring_Questionnaire*.xlsx')
     files = glob.glob(pattern)
     
     if not files:
